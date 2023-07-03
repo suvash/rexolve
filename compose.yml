@@ -1,0 +1,11 @@
+services:
+
+  lab:
+    image: ghcr.io/livebook-dev/livebook:0.9.3
+    user: "${HOST_USER_ID}:${HOST_GROUP_ID}"
+    restart: unless-stopped
+    volumes:
+      - ./livebook:/data
+    ports:
+      - "8080:8080"
+      - "8081:8081"
