@@ -1,0 +1,208 @@
+# Rexolve : Tiny DNS resolver in Elixir
+
+## Build a DNS Query
+
+How do we make a DNS query for `thapaliya.com` ?
+
+A DNS query has two parts, a **header** and a **question**. We will represent this using Elixir data structures.
+
+1. First, we implement the header and query using Elixir structs
+2. And then,
+3. And then,
+
+## The DNS Query structs
+
+The DNS header first. This has a couple of fields in it.
+
+* a query id
+* some flags, which we will mostly ignore
+* 4 counts (`num_questions`, `num_answers`, `num_authorities`, `num_additionals`), which provides information about the number of records to expect in each section of the DNS packet
+
+<!-- livebook:{"break_markdown":true} -->
+
+A DNS question has only 3 fields
+
+* a name (like `thapaliya.com`)
+* a type (like `A`)
+* a class (which is always the same)
+
+```elixir
+defmodule DNS do
+  defmodule Header do
+    # all members are integers
+    defstruct [:id, :flags, :num_questions, :num_answers, :num_authorities, :num_additionals]
+  end
+
+  defmodule Question do
+    # name is bytes, type and class integers
+    defstruct [:name, :type, :class]
+  end
+end
+```
+
+```elixir
+header_attrs = %{
+  id: 0,
+  flags: 0,
+  num_questions: 0,
+  num_answers: 0,
+  num_authorities: 0,
+  num_additionals: 0
+}
+
+struct(DNS.Header, header_attrs)
+```
+
+```elixir
+question_attrs = %{name: "test", type: 2, class: 1}
+struct(DNS.Question, question_attrs)
+```
+
+## Encode the structs to bytes (with proper endian-ness)
+
+```elixir
+defmodule Encode do
+  alias DNS
+
+  def domain_name(domain_name) do
+    # append_zero = fn(s) -> s <> <<0>> end
+    domain_name
+    |> String.split(".")
+    |> Enum.map(fn part -> <<byte_size(part)>> <> part end)
+    |> Enum.join(<<>>)
+    # |> append_zero.()
+    |> (&(&1 <> <<0>>)).()
+  end
+
+  def header(%DNS.Header{
+        id: id,
+        flags: flags,
+        num_questions: num_questions,
+        num_answers: num_answers,
+        num_authorities: num_authorities,
+        num_additionals: num_additionals
+      }) do
+    # each field is 2 bytes - 16 bits - big endian default
+    <<id::16-big, flags::16-big, num_questions::16-big, num_answers::16-big,
+      num_authorities::16-big, num_additionals::16-big>>
+  end
+
+  def question(%DNS.Question{
+        name: name,
+        type: type,
+        class: class
+      }) do
+    name <> <<type::16-big, class::16-big>>
+  end
+end
+```
+
+```elixir
+# Encode.encode_domain_name("example.com")
+Encode.domain_name("日本語.idn.icann.org")
+```
+
+```elixir
+Encode.header(%DNS.Header{
+  id: 0x1314,
+  flags: 0,
+  num_questions: 1,
+  num_additionals: 0,
+  num_authorities: 0,
+  num_answers: 0
+})
+```
+
+```elixir
+%DNS.Question{name: Encode.domain_name("example.com"), type: 1, class: 1}
+```
+
+```elixir
+Encode.question(%DNS.Question{name: Encode.domain_name("example.com"), type: 1, class: 1})
+```
+
+## Build the actual query
+
+```elixir
+defmodule Query do
+  alias DNS
+  alias Encode
+
+  # https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.2
+  @record_types %{A: 1}
+  # https://datatracker.ietf.org/doc/html/rfc1035#section-3.2.4
+  @record_classes %{IN: 1}
+
+  defp flags() do
+    # https://datatracker.ietf.org/doc/html/rfc1035#section-4.1.1
+    # 1 bit
+    qr = 0
+    # 4 bit
+    opcode = 0
+    # 1 bit
+    aa = 0
+    # 1 bit
+    tc = 0
+    # 1 bit
+    rd = 1
+    # 1 bit
+    ra = 0
+    # 3 bit
+    z = 0
+    # 4 bit
+    rcode = 0
+
+    <<flag::16>> = <<qr::1, opcode::4, aa::1, tc::1, rd::1, ra::1, z::3, rcode::4>>
+    flag
+  end
+
+  def build(domain_name, record_type, record_class) do
+    :rand.seed(:exsss, {100, 101, 102})
+    id = Enum.random(1..65_535)
+    name = Encode.domain_name(domain_name)
+    type = Map.fetch!(@record_types, record_type)
+    class = Map.fetch!(@record_classes, record_class)
+
+    header_attrs = %{
+      id: id,
+      flags: flags(),
+      num_questions: 1,
+      num_additionals: 0,
+      num_authorities: 0,
+      num_answers: 0
+    }
+
+    header = struct(DNS.Header, header_attrs)
+    enc_header = Encode.header(header)
+    question_attrs = %{name: name, type: type, class: class}
+    question = struct(DNS.Question, question_attrs)
+    enc_question = Encode.question(question)
+
+    enc_header <> enc_question
+  end
+end
+```
+
+```elixir
+Query.build("example.com", :A, :IN)
+```
+
+```elixir
+Query.build("日本語.idn.icann.org", :A, :IN)
+```
+
+## Send the query and get a response
+
+```elixir
+query = Query.build("example.com", :A, :IN)
+```
+
+```elixir
+# with port 0 a random free port is selected locally
+{:ok, socket} = :gen_udp.open(0, [:binary, {:active, false}])
+:gen_udp.send(socket, {8, 8, 8, 8}, 53, query)
+{:ok, response} = :gen_udp.recv(socket, 0)
+:gen_udp.close(socket)
+
+response
+```
